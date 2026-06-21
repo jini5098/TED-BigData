@@ -1,0 +1,29 @@
+name: TED BigData Engine
+
+on:
+  schedule:
+    # 30분마다 공장 가동!
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bigdata-engine:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 저장소 코드 불러오기
+      uses: actions/checkout@v3
+
+    - name: 파이썬 환경 세팅
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 필수 라이브러리 및 크롬 드라이버 설치
+      run: |
+        pip install selenium beautifulsoup4 webdriver-manager supabase
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+
+    - name: 빅데이터 수집 엔진 가동!
+      run: python bigdata_engine.py
