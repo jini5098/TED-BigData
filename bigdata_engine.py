@@ -20,19 +20,51 @@ chrome_options.add_argument("--disable-gpu")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--incognito")
 
-def scrape_entry_projects(url, tag, emoji, max_count):
-    """지정된 엔트리 주소에서 작품을 긁어와 특정 태그로 DB에 저장하는 함수"""
-    print(f"\n🚀 [{tag}] 타겟 분석 시작 -> {url}")
+def scrape_entry_projects_with_scroll(url, tag, emoji, max_count):
+    """지정된 엔트리 주소에서 '스크롤'을 내려 작품을 대량 수집하는 엔진"""
+    print(f"\n🚀 [{tag}] 순수 트렌드 분석 시작 -> {url}")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     driver.get(url)
     
-    # 넉넉하게 10초 대기 (엔트리 사이트 로딩 보장)
-    print("   -> ⏳ 페이지 로딩 및 데이터 렌더링 대기 중 (10초)...")
-    time.sleep(10)
+    print("   -> ⏳ 페이지 초기 로딩 대기 중 (5초)...")
+    time.sleep(5)
     
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    project_links = soup.select('a[href^="/project/"]')
+    # ---------------------------------------------------------
+    # 📜 무한 스크롤 엔진 가동 (홍님 요청 사항)
+    # ---------------------------------------------------------
+    print(f"   -> 📜 스크롤 매크로 가동! 숨겨진 데이터를 끌어올립니다. (목표: {max_count}개)")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    
+    while True:
+        # 화면 맨 아래로 강제 스크롤
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2) # 새로운 작품들이 로딩될 때까지 2초 대기
+        
+        # 현재 화면에 로딩된 작품 개수 확인
+        temp_soup = BeautifulSoup(driver.page_source, 'html.parser')
+        current_loaded_cards = len(temp_soup.select('a[href^="/project/"]'))
+        
+        print(f"      ...스크롤 중... 현재 발견된 작품 수: {current_loaded_cards}개")
+        
+        # 목표치(max_count)를 채웠으면 스크롤 중지
+        if current_loaded_cards >= max_count:
+            print("      🎯 목표 수량 도달! 스크롤을 멈춥니다.")
+            break
+            
+        # 스크롤을 내렸는데도 화면 길이가 안 늘어나면(끝에 도달하면) 중지
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            print("      🏁 페이지 끝에 도달하여 스크롤을 멈춥니다.")
+            break
+        last_height = new_height
+
+    # ---------------------------------------------------------
+    # 🕵️‍♂️ 데이터 추출 및 DB 적재 (순수 노가다 작업)
+    # ---------------------------------------------------------
+    print("   -> 🕵️‍♂️ 데이터 추출 및 DB 전송을 시작합니다...")
+    final_soup = BeautifulSoup(driver.page_source, 'html.parser')
+    project_links = final_soup.select('a[href^="/project/"]')
     
     collect_count = 0
     collected_urls = set()
@@ -68,7 +100,7 @@ def scrape_entry_projects(url, tag, emoji, max_count):
                 views_int = 0
                 likes_int = 0
 
-            # DB 저장 (tag가 username 역할)
+            # 스파이 데이터 저장 (tag 이름표를 달아서 보냄)
             supabase.table("works").insert({
                 "username": tag, 
                 "work_name": title_text, 
@@ -80,15 +112,14 @@ def scrape_entry_projects(url, tag, emoji, max_count):
             }).execute()
             
             collect_count += 1
-            print(f"      ✅ 수집 성공 [{collect_count}/{max_count}] : {title_text} (👁️ {views_int})")
+            print(f"      ✅ DB 전송 완료 [{collect_count}/{max_count}] : {title_text} (👁️ {views_int})")
 
     driver.quit()
 
 def clean_old_bigdata():
-    """DB 폭발 방지를 위해 URL당 최신 20개 기록만 남기고 폐기"""
+    """DB 폭발 방지를 위해 URL당 최신 20개(차트용) 기록만 남기고 폐기"""
     print("\n🧹 빅데이터 창고 최적화 (가비지 컬렉션) 시작...")
     try:
-        # 빅데이터 태그가 붙은 것만 타겟으로 청소
         response = supabase.table("works").select("id", "entry_url").in_("username", ["@BIGDATA_TOP", "@BIGDATA_BOTTOM"]).order("id", desc=True).execute()
         url_map = {}
         for row in response.data:
@@ -99,33 +130,33 @@ def clean_old_bigdata():
 
         delete_ids = []
         for url, records in url_map.items():
-            if len(records) > 20:
+            if len(records) > 20: # 20개 점(그래프 길이)만 유지
                 for old in records[20:]:
                     delete_ids.append(old.get("id"))
 
         if delete_ids:
-            # 100개씩 나눠서 안전하게 삭제
+            # 100개씩 나눠서 안전하게 서버에서 삭제
             for i in range(0, len(delete_ids), 100):
                 batch = delete_ids[i:i+100]
                 supabase.table("works").delete().in_("id", batch).execute()
             print(f"   -> 🗑️ 오래된 빅데이터 {len(delete_ids)}개 폐기 완료!")
         else:
-            print("   -> ✨ 데이터 용량이 쾌적합니다.")
+            print("   -> ✨ 창고 데이터 용량이 쾌적합니다.")
     except Exception as e:
         print(f"   -> ❌ 데이터 청소 에러: {e}")
 
 if __name__ == "__main__":
     print("=====================================================")
-    print("   🏭 TED BigData Factory - 데이터 파이프라인 가동")
+    print("   🏭 TED BigData Factory - 자동 스크롤 파이프라인 가동")
     print("=====================================================")
     
-    # 1. 상위 10개 (대박 작품) -> 인기 게시판 스크래핑
-    scrape_entry_projects(url="https://playentry.org/project/popular", tag="@BIGDATA_TOP", emoji="👑", max_count=10)
+    # 1. 인기 작품 100개 수집 (스선 제외, 순수 인기작)
+    scrape_entry_projects_with_scroll(url="https://playentry.org/project/popular", tag="@BIGDATA_TOP", emoji="👑", max_count=100)
     
-    # 2. 하위 10개 (쪽박/신생 작품) -> 모든 작품(최신순) 게시판 스크래핑
-    scrape_entry_projects(url="https://playentry.org/project/all", tag="@BIGDATA_BOTTOM", emoji="🐢", max_count=10)
+    # 2. 모든 작품 100개 수집 (신작/비인기작 대조군)
+    scrape_entry_projects_with_scroll(url="https://playentry.org/project/all", tag="@BIGDATA_BOTTOM", emoji="🐢", max_count=100)
     
-    # 3. 빅데이터 청소부 실행
+    # 3. 데이터 다이어트
     clean_old_bigdata()
     
-    print("\n🏁 모든 빅데이터 수집 및 전송 파이프라인 가동 완료!")
+    print("\n🏁 모든 빅데이터 200개 수집 및 전송 파이프라인 가동 완료!")
